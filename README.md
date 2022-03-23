@@ -4,7 +4,7 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <sup>written&nbsp;by&nbsp;Rop&nbsp;Gonggrijp</sup>
 
-**ezTime &mdash; pronounced "Easy Time" &mdash; is a very easy to use Arduino time and date library that provides NTP network time lookups, extensive timezone support, formatted time and date strings, user events, millisecond precision and more.**
+**ezTime &mdash; pronounced "Easy Time" &mdash; is a very easy to use Arduino time and date library that provides NTP network time lookups, extensive timezone support, formatted time and date strings, user events, microsecond precision and more.**
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <sup>*&nbsp;limitations&nbsp;may&nbsp;apply,&nbsp;see&nbsp;"[2036&nbsp;and&nbsp;2038](#2036-and-2038)"&nbsp;chapter</sup>
 
@@ -260,7 +260,7 @@ If your code uses timezones other than UTC, it might want to wait to initialise 
 
 `void setInterval(uint16_t seconds = 0);`
 
-By default, ezTime is set to poll `pool.ntp.org` about every 30 minutes. These defaults should work for most people, but you can change them by specifying a new server with `setServer` or a new interval (in seconds) with setInterval. If you call setInterval with an interval of 0 seconds or call it as `setInterval()`, no more NTP queries will be made.
+By default, ezTime is set to poll `pool.ntp.org` about every 15 seconds for the first 4 minutes and then gradually increase the interval up to 8 hours over three days. The results of each succesful poll are stored and used with linear regression to accomodate the drift of the local timesource, and to achieve accuracey better than available from just the most recent call. These defaults should work for most people, and avoid burdening the NTP servers that are operated by volunteers, but you can change them by specifying a new server with `setServer` or a new interval (in seconds) with setInterval. If you call setInterval with an interval of 0 seconds or call it as `setInterval()`, no more NTP queries will be made automatically.
 
 &nbsp;
 
@@ -268,7 +268,7 @@ By default, ezTime is set to poll `pool.ntp.org` about every 30 minutes. These d
 
 `void updateNTP();`
 
-Updates the time from the NTP server immediately. Will keep retrying about every 30 minutes  (defined by `NTP_RETRY` in `ezTime.h`), will schedule the next update to happen after the normal interval.
+Updates the time from the NTP server immediately. Will keep retrying about every 15 seconds (defined by `NTP_RETRY` in `ezTime.h`), will schedule the next update to happen after the normal interval.
 
 &nbsp;
 
@@ -289,6 +289,14 @@ This will send a single query to the NTP server your specify. It will put, in th
 If the time server answers, `queryNTP` returns `true`. If `false` is returned, `error()` will return either `NO_NETWORK` (if the WiFi is not connected) or `TIMEOUT` if a response took more than 1500 milliseconds (defined by `NTP_TIMEOUT` in `ezTime.h`).
 
 Note that this function is used internally by ezTime, but does not by itself set the time ezTime keeps. You will likely never need to call this from your code.
+
+&nbsp;
+
+### *queryNTPu*
+
+`bool queryNTPu(const String server, time_t &t, uint64_t &measured_at);`
+
+This function is just like `queryNTP` except it returns the `measured_at` variable in microseconds obtained from the `micros64()` function, also provided by this library.
 
 &nbsp;
 
@@ -482,6 +490,7 @@ We'll start with one of the most powerful functions of ezTime. With `dateTime` y
 | `i` | Minutes with leading zeros
 | `s` | Seconds with leading zero
 | `T` | abbreviation for timezone, like `CEST`
+| `V` | seconds since January 1 1970, aka Unix epoch time, so `V.v` provides milisecond resolution
 | `v` | milliseconds as three digits
 | `e` | Timezone identifier (Olson name), like `Europe/Berlin`
 | `O` | Difference to Greenwich time (GMT) in hours and minutes written together, like `+0200`. Here a positive offset means east of UTC.
@@ -798,6 +807,15 @@ When you call `error(true)`, it will also reset the error to `OK`, so you can ma
 `String errorString(ezError_t err = LAST_ERROR);`
 
 This will give you a string representation of the error specified. The pseudo-error `LAST_ERROR`, which is the default, will give you the textual representation of the last error. This will not reset the last error stored.
+
+&nbsp;
+
+### *regressionDebugData* and *regressionGraphData*
+
+`String regressionDebugData();`  
+`String regressionGraphData();`
+
+These functions return detailed data for debugging and presenting the regression values stored by the library. They can be send over serial or a webserver. The tab-delimited format is compatible with Excel and others.
 
 &nbsp;
 
