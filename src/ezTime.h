@@ -30,6 +30,8 @@
 // (to avoid naming conflicts in bigger projects, e.g.) 
 // #define EZTIME_EZT_NAMESPACE
 
+#define EZTIME_NO_FLOAT
+// use an integer version of the regression slope calculation, faster, but possibly less accurate
 
 // Warranty void if edited below this point...
 
@@ -65,7 +67,8 @@ typedef enum {
 	CACHE_TOO_SMALL,
 	TOO_MANY_EVENTS,
 	INVALID_DATA,
-	SERVER_ERROR
+	SERVER_ERROR,
+  OUTLIER
 } ezError_t;
 
 typedef enum {
@@ -139,6 +142,8 @@ typedef struct {
 
 #define MAX_EVENTS				8
 
+#define MAX_REGRESSION_POINTS 32
+
 #define TIME_NOW				(int32_t)0x7FFFFFFF			// Two special-meaning time_t values ...
 #define LAST_READ				(int32_t)0x7FFFFFFE			// (So yes, ezTime might malfunction two seconds before everything else...)
 
@@ -176,6 +181,9 @@ typedef struct {
 #define DEFAULT_TIMEFORMAT	COOKIE
 
 namespace ezt {
+  uint64_t micros64();
+  String regressionDebugData();
+  String regressionGraphData();
 	void breakTime(const time_t time, tmElements_t &tm);
 	time_t compileTime(const String compile_date = __DATE__, const String compile_time = __TIME__);
 	String dayShortStr(const uint8_t month);
@@ -199,6 +207,7 @@ namespace ezt {
 	String zeropad(const uint32_t number, const uint8_t length);
 
 	#ifdef EZTIME_NETWORK_ENABLE
+    bool queryNTPu(const String server, time_t &t, uint64_t &measured_at);
 		bool queryNTP(const String server, time_t &t, unsigned long &measured_at);
 		void setInterval(const uint16_t seconds = 0);
 		void setServer(const String ntp_server = NTP_SERVER);
@@ -312,12 +321,26 @@ namespace ezt {
 	uint8_t weekday(time_t t = TIME_NOW, const ezLocalOrUTC_t local_or_utc = LOCAL_TIME);
 	uint16_t year(time_t t = TIME_NOW, const ezLocalOrUTC_t local_or_utc = LOCAL_TIME); 
 	uint16_t yearISO(time_t t = TIME_NOW, const ezLocalOrUTC_t local_or_utc = LOCAL_TIME);
+
+  extern int regression_points;
+  extern int regression_counter;
+  extern time_t regression_epochs[MAX_REGRESSION_POINTS];
+  extern uint64_t regression_ats[MAX_REGRESSION_POINTS];
+  extern uint64_t regression_round_trips[MAX_REGRESSION_POINTS];
+  extern uint64_t regression_x_sum, regression_y_sum;
+  extern int64_t regression_x_hat[MAX_REGRESSION_POINTS];
+  extern int64_t regression_y_hat[MAX_REGRESSION_POINTS];
+  extern int32_t regression_inverse_slope;
+  extern int64_t regression_rt_sum;
+  extern int32_t regression_rt_sdev;
+  extern int32_t regression_residual_sdev;
+  extern uint32_t regression_rejection_inarow;
+  extern uint32_t regression_rejection_total;
 }
 
 #ifndef EZTIME_EZT_NAMESPACE
 	using namespace ezt;
 #endif
-
 
 // The following defines all copied from the original Time lib to keep existing code working
 
