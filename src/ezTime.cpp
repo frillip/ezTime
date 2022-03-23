@@ -65,6 +65,9 @@ const uint8_t monthDays[]={31,28,31,30,31,30,31,31,30,31,30,31}; // API starts m
 // The private things go in an anonymous namespace
 namespace {
 
+  bool regression_active = true; // need a command to unset (or move to ezt)
+  uint32_t relax_interval = 15;
+
 	ezError_t _last_error = NO_ERROR;
 	String _server_error = "";
 	ezDebugLevel_t _debug_level = NONE;
@@ -72,15 +75,15 @@ namespace {
 	ezEvent_t _events[MAX_EVENTS];
 	time_t _last_sync_time = 0;
 	time_t _last_read_t = 0;
-	uint32_t _last_sync_millis = 0;
+	uint64_t _last_sync_micros64 = 0;
 	uint16_t _last_read_ms;
 	timeStatus_t _time_status;
 	bool _initialised = false;
 	#ifdef EZTIME_NETWORK_ENABLE
-		uint16_t _ntp_interval = NTP_INTERVAL;
+		uint16_t _ntp_interval = regression_active ? relax_interval : NTP_INTERVAL;
 		String _ntp_server = NTP_SERVER;
 	#endif
-
+  
 	void triggerError(const ezError_t err) {
 		_last_error = err;
 		if (_last_error) {
@@ -97,23 +100,64 @@ namespace {
 			default: return 	F("DEBUG");
 		}
 	}
-
+  
+	time_t regressNowUTC(const uint64_t at = micros64(), const bool update_last_read = true) {
+    uint64_t b = regression_points * at - regression_x_sum;
+    uint64_t c;
+    if(regression_inverse_slope) c = b / regression_inverse_slope + b + 1000000 * regression_y_sum;
+    else                         c =                                b + 1000000 * regression_y_sum;
+    uint64_t d = c / regression_points / 1000000;
+		if (update_last_read) {
+			_last_read_t = d;
+			_last_read_ms = (c / regression_points / 1000) % 1000;
+		}
+    return(d);
+  }
+  
 	time_t nowUTC(const bool update_last_read = true) {
+    if(regression_active && regression_points >= 2) return regressNowUTC(micros64(), update_last_read);
 		time_t t;
-		uint32_t m = millis();
-		t = _last_sync_time + ((m - _last_sync_millis) / 1000);
+		uint64_t m = micros64();
+		t = _last_sync_time + ((m - _last_sync_micros64) / 1000000);
 		if (update_last_read) {
 			_last_read_t = t;
-			_last_read_ms = (m - _last_sync_millis) % 1000;
+			_last_read_ms = ((m - _last_sync_micros64)/1000) % 1000;
 		}
 		return t;
 	}
 
 }
 
-
-
 namespace ezt {
+
+  int regression_points = 0;
+  int regression_counter = 0;
+  time_t regression_epochs[MAX_REGRESSION_POINTS];
+  uint64_t regression_ats[MAX_REGRESSION_POINTS];
+  uint64_t regression_round_trips[MAX_REGRESSION_POINTS];
+  uint64_t regression_x_sum, regression_y_sum;
+  int64_t regression_x_hat[MAX_REGRESSION_POINTS]; // do we need to store this??? Graph?
+  int64_t regression_y_hat[MAX_REGRESSION_POINTS]; // do we need to store this??? Graph?
+  int32_t regression_inverse_slope;
+  int64_t regression_rt_sum;
+  int32_t regression_rt_sdev;
+  int32_t regression_residual_sdev;
+  uint32_t regression_rejection_inarow = 0;
+  uint32_t regression_rejection_total = 0;
+
+  uint64_t micros64() { // rolls over in 584,542 years
+    static uint32_t rollovers = 0, prev_micros = 0;
+    noInterrupts(); // encountered spurious rollovers increments
+    uint32_t m = micros();
+    if(m < 1073741824U && prev_micros > 3221225472U) { // more robust than m < prev_micros
+      //Serial.println("rollover " + (String)m + " " + (String)prev_micros);
+      // e.g. rollover 1026496679 1026499049
+      rollovers++;
+    }
+    prev_micros = m;
+    interrupts();
+    return ((uint64_t)rollovers)<<32 | m;
+  }
 
 	////////// Error handing
 
@@ -130,6 +174,7 @@ namespace ezt {
 			case CACHE_TOO_SMALL: return		F("Cache too small");
 			case TOO_MANY_EVENTS: return		F("Too many events");
 			case INVALID_DATA: return			F("Invalid data received from NTP server");
+			case OUTLIER: return			F("NTP result was deemed a regression outlier");
 			case SERVER_ERROR: return			_server_error; 
 			default: return						F("Unkown error");
 		}
@@ -178,8 +223,9 @@ namespace ezt {
 			_initialised = true;
 		}
 		// See if any events are due
+    time_t nutc = nowUTC(false); // want to call it once to catch rollovers in micros64(), why not only call it once?
 		for (uint8_t n = 0; n < MAX_EVENTS; n++) {
-			if (_events[n].function && nowUTC(false) >= _events[n].time) {
+			if (_events[n].function && nutc >= _events[n].time) {
 				debug(F("Running event (#")); debug(n + 1); debug(F(") set for ")); debugln(UTC.dateTime(_events[n].time));
 				void (*tmp)() = _events[n].function;
 				_events[n] = { 0, NULL };		// reset the event
@@ -373,15 +419,41 @@ namespace ezt {
 
 	#ifdef EZTIME_NETWORK_ENABLE
 
+    String uint64ToString(uint64_t input) {
+      String result = "";
+      do {
+        char c = (input % 10) + '0';
+        input /= 10;
+        result = c + result;
+      } while (input);
+      return result;
+    }
+    
+    String int64ToString(int64_t input) {
+      String result = "";
+      uint64_t posi;
+      if(input < 0) posi = -input;
+      else          posi = input;
+      do {
+        char c = (posi % 10) + '0';
+        posi /= 10;
+        result = c + result;
+      } while (posi);
+      if(input < 0) result = "-" + result;
+      return result;
+    }
+
+
+
 		void updateNTP() {
 			deleteEvent(updateNTP);	// Delete any events pointing here, in case called manually
 			time_t t;
-			unsigned long measured_at;
-			if (queryNTP(_ntp_server, t, measured_at)) {
-				int32_t correction = ( (t - _last_sync_time) * 1000 ) - ( measured_at - _last_sync_millis );
+			uint64_t measured_at;
+			if (queryNTPu(_ntp_server, t, measured_at)) {
+				int64_t correction = ( (t - _last_sync_time) * 1000000 ) - ( measured_at - _last_sync_micros64 );
 				_last_sync_time = t;
-				_last_sync_millis = measured_at;
-				_last_read_ms = ( millis() - measured_at) % 1000;
+				_last_sync_micros64 = measured_at;
+				_last_read_ms = ((micros64() - measured_at)/1000) % 1000;
 				info(F("Received time: "));
 				info(UTC.dateTime(t, F("l, d-M-y H:i:s.v T")));
 				if (_time_status != timeNotSet) {
@@ -389,11 +461,11 @@ namespace ezt {
 					if (!correction) {
 						infoln(F("spot on)"));
 					} else {
-						info(String(abs(correction)));
+						info(uint64ToString(abs(correction)));
 						if (correction > 0) {
-							infoln(F(" ms fast)"));
+							infoln(F(" us fast)"));
 						} else {
-							infoln(F(" ms slow)"));
+							infoln(F(" us slow)"));
 						}
 					}
 				} else {
@@ -412,7 +484,242 @@ namespace ezt {
 		// This is a nice self-contained NTP routine if you need one: feel free to use it.
 		// It gives you the seconds since 1970 (unix epoch) and the millis() on your system when 
 		// that happened (by deducting fractional seconds and estimated network latency).
+    
+    #ifdef EZTIME_NO_FLOAT
+      int bits(const int64_t val) {
+        int64_t v;
+        v = val>=0 ? val : -val;
+        if(!v) return 0;
+        int i = 1;
+        while(v > ((int64_t)1 << i)) i++;
+        return i;
+      }
+
+      uint32_t inv_slope(const int64_t x[], const int64_t y[], const int n) {
+        // dark magic to calculate regression slope without using floating point
+        // ESP32 has hardware floating point but it causes the FreeRTOS task to be locked to a core
+        // requires that x[] and y[] already have zero means
+        int max_xxbits = 0;
+        int max_xybits = 0;
+        for(int i=0; i<n; i++) {
+          int xbits = bits(x[i]);
+          int ybits = bits(y[i]);
+          int xxbits = xbits + xbits;
+          int xybits = xbits + ybits;
+          if(xxbits > max_xxbits) max_xxbits = xxbits;
+          if(xybits > max_xybits) max_xybits = xybits;
+        }
+        int drop_xxbits = max_xxbits + bits(n) - 63;
+        if(drop_xxbits < 0) drop_xxbits = 0;
+        int drop_xybits = max_xybits + bits(n) - 63;
+        if(drop_xybits < 0) drop_xybits = 0;
+        int drop_xxbits_1 = drop_xxbits / 2;
+        int drop_xxbits_2 = drop_xxbits - drop_xxbits_1; // takes care of odd totals
+        int drop_xybits_1 = drop_xybits / 2;
+        int drop_xybits_2 = drop_xybits - drop_xybits_1; // takes care of odd totals
+        int64_t xx_sum = 0; // could be uint64_t but tricky
+        int64_t xy_sum = 0;
+        for(int i=0; i<n; i++) {
+          xx_sum += (x[i] >>  drop_xxbits_1) * (x[i] >>  drop_xxbits_2);
+          xy_sum += (x[i] >>  drop_xybits_2) * (y[i] >>  drop_xybits_1);
+        }
+        int32_t res;
+        if(xy_sum == 0) res = 0; // highly unlikely, 0 is code for infinite
+        else {
+          int boost_bits = drop_xxbits - drop_xybits; // should be positive;
+          int xx_scale = 63 - bits(xx_sum);
+          if(xx_scale > 0) boost_bits -= xx_scale;
+          else xx_scale = 0;
+          int64_t num = xx_sum << xx_scale;
+          int64_t den = xy_sum >> boost_bits;
+          int64_t ratio = (num + den/2) / den; // round, not floor
+          res = ratio;
+        }
+        return res;
+      }
+    #else
+      uint32_t inv_slope(const int64_t x[], const int64_t y[], const int n) {
+        // easy accurate way using floats
+        #warning "Be sure that floating point calculations are neccesary"
+        float slope_numerator = 0.;
+        float slope_denominator = 0.;
+        for(int i=0; i<n; i++) {
+          slope_numerator += (float)(x[i]) * (float)(y[i]);
+          slope_denominator += (float)(x[i]) * (float)(x[i]);
+        }
+        int32_t res;
+        if(slope_numerator < 1.e-9 * slope_denominator) // protects divide by 0
+          res = 0; // zero means no drift
+        else
+          res = slope_denominator / slope_numerator;
+        return res;
+     }
+    #endif // EZTIME_NO_FLOAT
+    
+    uint32_t gapsqrt64(uint64_t a) { // https://gist.github.com/foobaz/3287f153d125277eefea
+      uint64_t rem = 0, root = 0;
+
+      for (int i = 64 / 2; i > 0; i--) {
+        root <<= 1;
+        rem = (rem << 2) | (a >> (64 - 2));
+        a <<= 2;
+        if (root < rem) {
+          rem -= root | 1;
+          root += 2;
+        }
+      }
+      return root >> 1;
+    }
+    
+    String regressionDebugData() {
+      String s = "counter\t" + (String)ezt::regression_counter + "\n";
+      s += "points\t" + (String)ezt::regression_points + "\n";
+      s += "x_sum\t" + uint64ToString(ezt::regression_x_sum) + "\n";
+      s += "y_sum\t" + uint64ToString(ezt::regression_y_sum) + "\n";
+      s += "inverse_slope\t" + int64ToString(ezt::regression_inverse_slope) + "\n";
+      s += "rt_sum\t" + uint64ToString(ezt::regression_rt_sum) + "\n";
+      s += "rt_sdev\t" + (String)ezt::regression_rt_sdev + "\n";
+      s += "residual_sdev\t" + (String)ezt::regression_residual_sdev + "\n";
+      s += "rejection_total\t" + (String)ezt::regression_rejection_total + "\n";
+      s += "\nuC Time (us)\tEpoch Time (s)\tn_x_hat (n us)\tn_y_hat(n us)\tfit_n_y_hat (n us)\tround_trip (us)\n";
+      for(int i=0; i<ezt::regression_points; i++) {
+        int64_t fit_n_y_hat;
+        if(ezt::regression_inverse_slope)
+          fit_n_y_hat = (ezt::regression_x_hat[i] + ezt::regression_inverse_slope/2) / ezt::regression_inverse_slope;
+        else fit_n_y_hat = 0;
+        s += uint64ToString(ezt::regression_ats[i]) + "\t" + (String)ezt::regression_epochs[i] + "\t"
+             + int64ToString(ezt::regression_x_hat[i]) + "\t" + int64ToString(ezt::regression_y_hat[i]) + "\t"
+             + int64ToString(fit_n_y_hat) + "\t" + uint64ToString(ezt::regression_round_trips[i])  + "\n";
+      }
+      uint64_t at = micros64();
+      int64_t cur_x_hat = ezt::regression_points * at - ezt::regression_x_sum;
+      int64_t cur_fit_y_hat;
+      if(ezt::regression_inverse_slope)
+        cur_fit_y_hat = (cur_x_hat + ezt::regression_inverse_slope/2) / ezt::regression_inverse_slope;
+      else cur_fit_y_hat = 0;
+      s += uint64ToString(at) + "\t\t"
+           + int64ToString(cur_x_hat) + "\t\t" + int64ToString(cur_fit_y_hat) + "\t\n";
+      return s;
+    }
+    
+    String Sprintf(const char* fmt, const float val) {
+      char tmp [128];
+      snprintf(tmp, 128, fmt, val);
+      return (String)tmp;
+    }
+    
+    String regressionGraphData() {
+      String s = "uC Time (hr)\tRegression (ms)\tNTP Offset (ms)\tResidual (ms)\t95% CL (ms)\n";
+      for(int i=0; i<ezt::regression_points; i++) {
+        int64_t fit_n_y_hat;
+        if(regression_inverse_slope)
+          fit_n_y_hat = (regression_x_hat[i] + regression_inverse_slope/2) / regression_inverse_slope;
+        else fit_n_y_hat = 0;
+        s += Sprintf("%.4f\t", (float)regression_ats[i] / 3.6e9);
+        s += Sprintf("%.2f\t", (float)fit_n_y_hat / (float)regression_points / (float)1000.);
+        s += Sprintf("%.2f\t", (float)regression_y_hat[i] / (float)regression_points / (float)1000.);
+        s += Sprintf("%.2f\t", (float)(regression_y_hat[i] - fit_n_y_hat) / (float)regression_points / (float)1000.);
+        s += Sprintf("%.2f\n", (float)0.);
+      }
+      uint64_t at = micros64();
+      int64_t cur_x_hat = regression_points * at - regression_x_sum;
+      int64_t cur_fit_y_hat;
+      if(regression_inverse_slope)
+        cur_fit_y_hat = (cur_x_hat + regression_inverse_slope/2) / regression_inverse_slope;
+      else cur_fit_y_hat = 0;
+      s += Sprintf("%.4f\t", (float)at / (float)3.6e9);
+      s += Sprintf("%.2f\t\t\t\n", (float)cur_fit_y_hat / (float)regression_points / (float)1000.);
+      return s;
+    }
+  
+    bool add_regression_point(const time_t t, const uint64_t at, const uint64_t round_trip) {
+      regression_counter++; // even if rejected
+
+      // check for outliers (large residual from old line combined with large round_trip) and return false
+      if(regression_points > 12) { // need stable stats to do rejections
+        int64_t rt_z_10 = ((int64_t)round_trip * 10 - (int64_t)regression_rt_sum * 10 / regression_points) / regression_rt_sdev;
+        int64_t rxh = regression_points * at - regression_x_sum;
+        int64_t ryh = (regression_points * (uint64_t)t - regression_y_sum) * 1000000 - rxh;
+        int64_t fit_n_y_hat;
+        if(regression_inverse_slope)
+          fit_n_y_hat = (rxh + regression_inverse_slope/2) / regression_inverse_slope;
+        else fit_n_y_hat = 0;
+        int64_t resid = ryh - fit_n_y_hat;
+        int64_t residual_z_10 = (resid * 10) / regression_residual_sdev;
+        int64_t thresh = 30 + 5 * regression_rejection_inarow; // 3.0, 3.5, 4.0, ... standard deviations
+        if((rt_z_10 >= 0) && (residual_z_10*residual_z_10 + rt_z_10*rt_z_10 > thresh*thresh) ||
+           (rt_z_10 < 0) && (residual_z_10 > thresh || residual_z_10 < -thresh)) {
+           regression_rejection_inarow++;
+           regression_rejection_total++;
+           //Serial.println("Rejected point " + (String)regression_counter + " rt_z_10: " + int64ToString(rt_z_10) + " residual_z_10: " + int64ToString(residual_z_10));
+           return false;
+        }
+      }
+      regression_rejection_inarow = 0; // we're accepting the point
+
+      if(regression_points < MAX_REGRESSION_POINTS) {
+        regression_epochs[regression_points] = t;
+        regression_ats[regression_points] = at;
+        regression_round_trips[regression_points] = round_trip;
+        regression_points++;
+      }
+      else { // would be more efficient to maintain a pointer to next overwrite.
+        for(int i=1; i<MAX_REGRESSION_POINTS; i++) {
+          regression_epochs[i-1] = regression_epochs[i];
+          regression_ats[i-1] = regression_ats[i];
+          regression_round_trips[i-1] = regression_round_trips[i];
+        }
+        regression_epochs[MAX_REGRESSION_POINTS-1] = t;
+        regression_ats[MAX_REGRESSION_POINTS-1] = at;
+        regression_round_trips[MAX_REGRESSION_POINTS-1] = round_trip;
+      }
+      // (re)calculate regression constants
+      regression_x_sum = 0;
+      regression_y_sum = 0;
+      regression_rt_sum = 0;
+      uint64_t rt2_sum = 0;
+      for(int i=0; i<regression_points; i++) {
+        regression_x_sum += (uint64_t)regression_ats[i];
+        regression_y_sum += (uint64_t)regression_epochs[i];
+        regression_rt_sum += (uint64_t)regression_round_trips[i];
+        rt2_sum += regression_round_trips[i] * regression_round_trips[i]; // need ot check/handle overflow.
+      }
+      for(int i=0; i<regression_points; i++) {
+        regression_x_hat[i] = regression_points * (uint64_t)regression_ats[i] - regression_x_sum;
+        regression_y_hat[i] = (regression_points * (uint64_t)regression_epochs[i] - regression_y_sum) * 1000000 - regression_x_hat[i];
+      }
+      if(regression_points >= 8) // need some points before trusting calculation
+        regression_inverse_slope = inv_slope(regression_x_hat, regression_y_hat, regression_points);
+      else regression_inverse_slope = 0; // zero means no drift (could save and use previous value)
+      uint64_t resid2_sum = 0;
+      for(int i=0; i<regression_points; i++) {
+        int64_t fit_n_y_hat;
+        if(regression_inverse_slope)
+          fit_n_y_hat = (regression_x_hat[i] + regression_inverse_slope/2) / regression_inverse_slope;
+        else fit_n_y_hat = 0;
+        int64_t resid = regression_y_hat[i] - fit_n_y_hat;
+        resid2_sum += (uint64_t)(resid * resid);
+      }
+      regression_rt_sdev = gapsqrt64((rt2_sum-(regression_rt_sum*regression_rt_sum/regression_points))/regression_points);
+      regression_residual_sdev = gapsqrt64(resid2_sum/regression_points);
+      
+      if(regression_points > 16) {
+        relax_interval = (relax_interval * 9) / 8;
+        if(relax_interval > 28800) relax_interval = 28800;
+        setInterval(relax_interval);
+      }
+      
+      return true;
+    }
+    
 		bool queryNTP(const String server, time_t &t, unsigned long &measured_at) {
+      uint64_t maus;
+      bool res = queryNTPu(server, t, maus);
+      measured_at = maus / 1000;
+      return res;
+    }
+
+		bool queryNTPu(const String server, time_t &t, uint64_t &measured_at) {
 			info(F("Querying "));
 			info(server);
 			info(F(" ... "));
@@ -443,15 +750,15 @@ namespace ezt {
 	
 			udp.flush();
 			udp.begin(NTP_LOCAL_PORT);
-			unsigned long started = millis();
 			udp.beginPacket(server.c_str(), 123); //NTP requests are to port 123
+			uint64_t started = micros64();
 			udp.write(buffer, NTP_PACKET_SIZE);
 			udp.endPacket();
 
 			// Wait for packet or return false with timed out
 			while (!udp.parsePacket()) {
-				delay (1);
-				if (millis() - started > NTP_TIMEOUT) {
+				delayMicroseconds(1);
+				if (micros64() - started > NTP_TIMEOUT*1000) {
 					udp.stop();	
 					triggerError(TIMEOUT); 
 					return false;
@@ -459,6 +766,7 @@ namespace ezt {
 			}
 			udp.read(buffer, NTP_PACKET_SIZE);
 			udp.stop();													// On AVR there's only very limited sockets, we want to free them when done.
+			uint64_t done = micros64();
 	
 			//print out received packet for debug
 			int i;
@@ -501,11 +809,17 @@ namespace ezt {
 			}
 
 			// Set the t and measured_at variables that were passed by reference
-			uint32_t done = millis();
-			info(F("success (round trip ")); info(done - started); infoln(F(" ms)"));
+			info(F("success (round trip ")); info(uint64ToString(done - started)); infoln(F(" us)"));
 			t = secsSince1900 - 2208988800UL;					// Subtract 70 years to get seconds since 1970
-			uint16_t ms = fraction / 4294967UL;					// Turn 32 bit fraction into ms by dividing by 2^32 / 1000 
-			measured_at = done - ((done - started) / 2) - ms;	// Assume symmetric network latency and return when we think the whole second was.
+			uint64_t us = ((uint64_t)fraction * 1000000) >> 32; // Turn 32 bit fraction into us by dividing by 2^32 / 1000000 
+			measured_at = done - ((done - started) / 2) - us;	// Assume symmetric network latency and return when we think the whole second was.
+
+      if(regression_active) {
+        if(!add_regression_point(t, measured_at, done - started)) {
+          triggerError(OUTLIER); 
+          return false;
+        }
+      }
 				
 			return true;
 		}
@@ -520,13 +834,13 @@ namespace ezt {
 
 		bool waitForSync(const uint16_t timeout /* = 0 */) {
 
-			unsigned long start = millis();
+			uint64_t start = micros64();
 		
 			#if !defined(EZTIME_ETHERNET)
 				if (WiFi.status() != WL_CONNECTED) {
 					info(F("Waiting for WiFi ... "));
 					while (WiFi.status() != WL_CONNECTED) {
-						if ( timeout && (millis() - start) / 1000 > timeout ) { triggerError(TIMEOUT); return false;};
+						if ( timeout && (micros64() - start) / 1000000 > timeout ) { triggerError(TIMEOUT); return false;};
 						events();
 						delay(25);
 					}
@@ -537,7 +851,7 @@ namespace ezt {
 			if (_time_status != timeSet) {
 				infoln(F("Waiting for time sync"));
 				while (_time_status != timeSet) {
-					if ( timeout && (millis() - start) / 1000 > timeout ) { triggerError(TIMEOUT); return false;};
+					if ( timeout && (micros64() - start) / 1000000 > timeout ) { triggerError(TIMEOUT); return false;};
 					delay(250);
 					events();
 				}
@@ -817,7 +1131,7 @@ String Timezone::getPosix() { return _posix; }
 		
 		udp.flush();
 		udp.begin(TIMEZONED_LOCAL_PORT);
-		unsigned long started = millis();
+		uint64_t started = micros64();
 		udp.beginPacket(TIMEZONED_REMOTE_HOST, TIMEZONED_REMOTE_PORT);
 		udp.write((const uint8_t*)location.c_str(), location.length());
 		udp.endPacket();
@@ -825,7 +1139,7 @@ String Timezone::getPosix() { return _posix; }
 		// Wait for packet or return false with timed out
 		while (!udp.parsePacket()) {
 			delay (1);
-			if (millis() - started > TIMEZONED_TIMEOUT) {
+			if ((micros64() - started)/1000 > TIMEZONED_TIMEOUT) {
 				udp.stop();	
 				triggerError(TIMEOUT);
 				return false;
@@ -837,8 +1151,8 @@ String Timezone::getPosix() { return _posix; }
 		while (udp.available()) recv += (char)udp.read();
 		udp.stop();
 		info(F("(round-trip "));
-		info(millis() - started);
-		info(F(" ms)  "));
+		info(micros64() - started);
+		info(F(" us)  "));
 		if (recv.substring(0,6) == "ERROR ") {
 			_server_error = recv.substring(6);
 			error (SERVER_ERROR);
@@ -1160,7 +1474,7 @@ void Timezone::setTime(const time_t t, const uint16_t ms /* = 0 */) {
 	int16_t offset;
 	offset = getOffset(t);
 	_last_sync_time = t + offset * 60;
-	_last_sync_millis = millis() - ms;
+	_last_sync_micros64 = micros64() - ms * 1000;
 	_time_status = timeSet;
 }
 
@@ -1320,6 +1634,9 @@ String Timezone::dateTime(time_t t, const ezLocalOrUTC_t local_or_utc, const Str
 					break;
 				case 'T':	// abbreviation for timezone
 					out += tzname;	
+					break;
+				case 'V':	// Unix time
+					out += (String)t;				
 					break;
 				case 'v':	// milliseconds as three digits
 					out += ezt::zeropad(_last_read_ms, 3);				
