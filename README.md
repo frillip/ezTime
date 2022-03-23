@@ -817,6 +817,8 @@ This will give you a string representation of the error specified. The pseudo-er
 
 These functions return detailed data for debugging and presenting the regression values stored by the library. They can be send over serial or a webserver. The tab-delimited format is compatible with Excel and others.
 
+![](images/regression-graph.png)
+
 &nbsp;
 
 ## Compatibility with Arduino Time library
