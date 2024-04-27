@@ -472,7 +472,7 @@ namespace ezt {
 					infoln("");
 				}
 				if (_ntp_interval) UTC.setEvent(updateNTP, t + _ntp_interval);
-				_time_status = timeSet;
+				_time_status = timeSync;
 			} else {
 			        if ( nowUTC(false) > _last_sync_time + _ntp_interval + NTP_STALE_AFTER ) {
 			        	_time_status = timeNeedsSync;
@@ -848,9 +848,9 @@ namespace ezt {
 				}
 			#endif
 
-			if (_time_status != timeSet) {
+			if (_time_status != timeSync) {
 				infoln(F("Waiting for time sync"));
-				while (_time_status != timeSet) {
+				while (_time_status != timeSync) {
 					if ( timeout && (micros64() - start) / 1000000 > timeout ) { triggerError(TIMEOUT); return false;};
 					delay(250);
 					events();

@@ -131,8 +131,9 @@ typedef struct  {
 
 typedef enum { 
 	timeNotSet,
+	timeSet,
 	timeNeedsSync,
-	timeSet
+	timeSync,
 } timeStatus_t;
 
 typedef struct {
