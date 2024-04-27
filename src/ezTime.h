@@ -249,7 +249,7 @@ class Timezone {
 		uint8_t setEvent(void (*function)(), const uint8_t hr, const uint8_t min, const uint8_t sec, const uint8_t day, const uint8_t mnth, uint16_t yr);
 		uint8_t setEvent(void (*function)(), time_t t = TIME_NOW, const ezLocalOrUTC_t local_or_utc = LOCAL_TIME);
 		bool setPosix(const String posix);
-		void setTimeuS(const time_t t, const uint32_t us = 0);
+		void setTimeus(const time_t t, const uint32_t us = 0);
 		void setTime(const time_t t, const uint16_t ms = 0);
 		void setTime(const uint8_t hr, const uint8_t min, const uint8_t sec, const uint8_t day, const uint8_t mnth, uint16_t yr);
 		time_t tzTime(time_t t = TIME_NOW, ezLocalOrUTC_t local_or_utc = LOCAL_TIME);
