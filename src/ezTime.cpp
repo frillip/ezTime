@@ -1470,6 +1470,14 @@ uint8_t Timezone::setEvent(void (*function)(), time_t t /* = TIME_NOW */, const 
 	return 0;
 }
 
+void Timezone::setTimeuS(const time_t t, const uint32_t us /* = 0 */) {
+	int16_t offset;
+	offset = getOffset(t);
+	_last_sync_time = t + offset * 60;
+	_last_sync_micros64 = micros64() - us;
+	_time_status = timeSet;
+}
+
 void Timezone::setTime(const time_t t, const uint16_t ms /* = 0 */) {
 	int16_t offset;
 	offset = getOffset(t);
