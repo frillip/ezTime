@@ -147,7 +147,7 @@ namespace ezt {
 
   uint64_t micros64() { // rolls over in 584,542 years
     static uint32_t rollovers = 0, prev_micros = 0;
-    noInterrupts(); // encountered spurious rollovers increments
+    //noInterrupts(); // encountered spurious rollovers increments
     uint32_t m = micros();
     if(m < 1073741824U && prev_micros > 3221225472U) { // more robust than m < prev_micros
       //Serial.println("rollover " + (String)m + " " + (String)prev_micros);
@@ -155,7 +155,7 @@ namespace ezt {
       rollovers++;
     }
     prev_micros = m;
-    interrupts();
+    //interrupts();
     return ((uint64_t)rollovers)<<32 | m;
   }
 
