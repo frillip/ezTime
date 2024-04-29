@@ -65,7 +65,7 @@ const uint8_t monthDays[]={31,28,31,30,31,30,31,31,30,31,30,31}; // API starts m
 // The private things go in an anonymous namespace
 namespace {
 
-  bool regression_active = true; // need a command to unset (or move to ezt)
+  bool regression_active = false; // need a command to unset (or move to ezt)
   uint32_t relax_interval = 15;
 
 	ezError_t _last_error = NO_ERROR;
