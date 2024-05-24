@@ -1717,7 +1717,7 @@ uint8_t Timezone::second(time_t t /*= TIME_NOW */, const ezLocalOrUTC_t local_or
 
 uint16_t Timezone::ms(time_t t /*= TIME_NOW */) {
 	// Note that here passing anything but TIME_NOW or LAST_READ is pointless
-	if (t == TIME_NOW) { nowUTC(); return _last_read_ms; }
+	if (t == TIME_NOW) { nowUTC(false); return _last_read_ms; }
 	if (t == LAST_READ) return _last_read_ms;
 	return 0;
 }
