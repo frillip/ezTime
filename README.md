@@ -241,8 +241,9 @@ Returns what state the clock is in. `timeStatus()` will return one of:
 | timeStatus | meaning |
 |----|----|
 | `timeNotSet` | No NTP update or manual setting of the clock (by calling the `.setTime` method of a timezone) has taken place |
-| `timeSet` | The clock should have the current time |
+| `timeSet` | The clock has been set manually by `.setTime` |
 | `timeNeedsSync` | A scheduled NTP request has been due for more than an hour. (The time an update needs to be due before `timeNeedsSync` is set is configured by the `NTP_STALE_AFTER` define in the `ezTime.h` file.) |
+| `timeSync` | The time has been synced from an NTP server and is considered valid as this has happened within the period set by the `NTP_STALE_AFTER` define in the `ezTime.h` file. |
 
 &nbsp;
 
